@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<configuration>
+
+  <!-- 告诉 Hive：HBase 的 Zookeeper 在哪个主机 -->
+  <property>
+    <name>hbase.zookeeper.quorum</name>
+    <value>hbase</value>
+  </property>
+
+  <!-- ZK 端口，HBase 默认就是 2181 -->
+  <property>
+    <name>hbase.zookeeper.property.clientPort</name>
+    <value>2181</value>
+  </property>
+
+  <!-- HBase 在 ZK 上用的根 znode，默认就是 /hbase，写上更明确 -->
+  <property>
+    <name>zookeeper.znode.parent</name>
+    <value>/hbase</value>
+  </property>
+
+</configuration>

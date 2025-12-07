@@ -1,0 +1,201 @@
+version: "3.8"
+
+networks:
+  bigdata:
+
+volumes:
+  esdata:
+  namenode:
+  datanode:
+
+services:
+  # =============== ZOOKEEPER ===============
+  zookeeper:
+    image: zookeeper:3.8.0
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - bigdata
+
+  # =============== KAFKA ===============
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    networks:
+      - bigdata
+
+  # =============== ELASTICSEARCH ===============
+  elasticsearch:
+    image: elasticsearch:7.12.1
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - bigdata
+
+  # =============== KIBANA ===============
+  kibana:
+    image: kibana:7.12.1
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - I18N_LOCALE=zh-CN
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - bigdata
+
+  # =============== LOGSTASH ===============
+  logstash:
+    build:
+      context: ./logstash
+    image: custom-logstash:7.12.1
+    container_name: logstash
+    depends_on:
+      - kafka
+      - elasticsearch
+      - namenode
+    ports:
+      - "5044:5044"
+      - "5045:5045"
+    volumes:
+      - ./elk/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - ./logstash/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+    networks:
+      - bigdata
+
+  # =============== HDFS: NAMENODE ===============
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      - CLUSTER_NAME=lab
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode:/hadoop/dfs/name
+    networks:
+      - bigdata
+
+  # =============== HDFS: DATANODE ===============
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870
+    ports:
+      - "9864:9864"
+    volumes:
+      - datanode:/hadoop/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - bigdata
+
+  # =============== HIVE Metastore DB (PostgreSQL) ===============
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    container_name: hive-metastore-postgresql
+    networks:
+      - bigdata
+
+  # =============== HIVE Metastore Service ===============
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-metastore
+    command: /opt/hive/bin/hive --service metastore
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870 datanode:9864 hive-metastore-postgresql:5432
+    depends_on:
+      - namenode
+      - datanode
+      - hive-metastore-postgresql
+    ports:
+      - "9083:9083"
+    volumes:
+      - ./hbase-conf/hbase-site.xml:/opt/hive/conf/hbase-site.xml:ro
+    networks:
+      - bigdata
+
+  # =============== HIVE Server2 ===============
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      - HIVE_CORE_CONF_javax_jdo_option_ConnectionURL=jdbc:postgresql://hive-metastore-postgresql/metastore
+      - SERVICE_PRECONDITION=hive-metastore:9083
+    depends_on:
+      - hive-metastore
+    ports:
+      - "10000:10000"
+    volumes:
+      - ./hbase-conf/hbase-site.xml:/opt/hive/conf/hbase-site.xml:ro
+    networks:
+      - bigdata
+
+  # =============== 订单脚本（写 Kafka） ===============
+  order-generator:
+    image: python:3.11-slim
+    container_name: order-generator
+    working_dir: /app
+    volumes:
+      - ./order_generator:/app
+    command: ["sh", "-c", "pip install kafka-python && python order_generator.py"]
+    depends_on:
+      - kafka
+    networks:
+      - bigdata
+
+  # =============== HBASE（伪分布，带 Thrift） ===============
+  hbase:
+    image: harisekhon/hbase
+    container_name: hbase
+    ports:
+      - "8080:8080"   # HBase Web UI
+      - "9090:9090"   # Thrift for HappyBase
+    networks:
+      - bigdata
+
+  # =============== Kafka → HBase 同步脚本 ===============
+  kafka-to-hbase:
+    image: python:3.11-slim
+    container_name: kafka-to-hbase
+    working_dir: /app
+    volumes:
+      - ./kafka_to_hbase:/app
+    command: ["bash", "-c", "pip install kafka-python happybase && python kafka_to_hbase.py"]
+    depends_on:
+      - kafka
+      - hbase
+    networks:
+      - bigdata

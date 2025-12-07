@@ -1,0 +1,6 @@
+http.host: "0.0.0.0"
+xpack.monitoring.enabled: false
+
+# 关键：只用一个 pipeline worker，避免并发写同一个 HDFS 文件
+pipeline.workers: 1
+
